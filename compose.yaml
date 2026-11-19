@@ -1,0 +1,55 @@
+
+services:
+  vllm:
+    image: vllm/vllm-openai-cpu:v0.20.2-x86_64
+    shm_size: "2gb"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "2"
+    volumes:
+      - mesh-model-cache:/root/.cache/huggingface
+    command:
+      - --model
+      - Qwen/Qwen2.5-0.5B-Instruct
+      - --served-model-name
+      - mesh-small
+      - --dtype
+      - bfloat16
+      - --max-model-len
+      - "2048"
+      - --max-num-seqs
+      - "1"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/models', timeout=5)"
+      interval: 10s
+      timeout: 8s
+      retries: 60
+      start_period: 60s
+    networks:
+      - mesh-private
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      UPSTREAM_URL: http://vllm:8000
+    depends_on:
+      vllm:
+        condition: service_healthy
+    networks:
+      - mesh-private
+
+volumes:
+  mesh-model-cache:
+    name: mesh-model-cache
+
+networks:
+  mesh-private:
+    driver: bridge

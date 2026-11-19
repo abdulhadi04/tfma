@@ -1,0 +1,242 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Terrifix Mesh Chat</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f5f7;
+            margin: 0;
+            padding: 30px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+        }
+
+        h1 {
+            margin-top: 0;
+        }
+
+        input, textarea, button {
+            box-sizing: border-box;
+            width: 100%;
+            padding: 12px;
+            margin-top: 10px;
+            font-size: 15px;
+        }
+
+        textarea {
+            min-height: 90px;
+            resize: vertical;
+        }
+
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #chat {
+            height: 350px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .message {
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+
+        .user {
+            color: #1d4ed8;
+        }
+
+        .assistant {
+            color: #166534;
+        }
+
+        #status {
+            color: #666;
+            font-size: 13px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Terrifix Mesh Chat</h1>
+        <p>Local AI inference powered by vLLM</p>
+
+        <label for="apiKey">API Key</label>
+        <input
+            id="apiKey"
+            type="password"
+            placeholder="Enter your API key"
+            autocomplete="off"
+        >
+
+        <div id="chat"></div>
+
+        <label for="prompt">Your message</label>
+        <textarea
+            id="prompt"
+            placeholder="Ask the model something..."
+        ></textarea>
+
+        <button id="sendButton" onclick="sendMessage()">
+            Send Message
+        </button>
+
+        <p id="status">Ready</p>
+    </div>
+
+    <script>
+        // Store messages so the model remembers this conversation
+        const messages = [];
+
+        async function sendMessage() {
+            const apiKey = document.getElementById("apiKey").value.trim();
+            const promptInput = document.getElementById("prompt");
+            const prompt = promptInput.value.trim();
+            const chat = document.getElementById("chat");
+            const status = document.getElementById("status");
+            const button = document.getElementById("sendButton");
+
+            if (!apiKey || !prompt) {
+                alert("Please enter an API key and a message.");
+                return;
+            }
+
+            button.disabled = true;
+            status.textContent = "Generating response...";
+
+            // Add the user's message to the conversation
+            messages.push({
+                role: "user",
+                content: prompt
+            });
+
+            const userMessage = document.createElement("div");
+            userMessage.className = "message user";
+            userMessage.textContent = "You: " + prompt;
+            chat.appendChild(userMessage);
+
+            const aiMessage = document.createElement("div");
+            aiMessage.className = "message assistant";
+            aiMessage.textContent = "AI: ";
+            chat.appendChild(aiMessage);
+
+            promptInput.value = "";
+
+            let fullResponse = "";
+
+            try {
+                const response = await fetch("/v1/chat/completions", {
+                    method: "POST",
+                    headers: {
+                        "Authorization": "Bearer " + apiKey,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        model: "mesh-small",
+                        messages: messages,
+                        max_tokens: 200,
+                        stream: true
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.text();
+                    throw new Error(
+                        "HTTP " + response.status + ": " + error
+                    );
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+                let finished = false;
+
+                // Read chunks as they arrive from the gateway
+                while (!finished) {
+                    const { value, done } = await reader.read();
+
+                    if (done) {
+                        break;
+                    }
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // SSE events are separated by a blank line
+                    const events = buffer.split(/\r?\n\r?\n/);
+                    buffer = events.pop();
+
+                    for (const event of events) {
+                        const dataLines = event.split(/\r?\n/)
+                            .filter(line => line.startsWith("data:"))
+                            .map(line => line.slice(5).trimStart());
+
+                        if (dataLines.length === 0) {
+                            continue;
+                        }
+
+                        const data = dataLines.join("\n");
+
+                        if (data === "[DONE]") {
+                            finished = true;
+                            break;
+                        }
+
+                        const parsed = JSON.parse(data);
+                        const token = parsed.choices?.[0]?.delta?.content;
+
+                        if (token) {
+                            fullResponse += token;
+                            aiMessage.textContent = "AI: " + fullResponse;
+                            chat.scrollTop = chat.scrollHeight;
+                        }
+                    }
+                }
+
+                // Save the completed AI reply for the next request
+                messages.push({
+                    role: "assistant",
+                    content: fullResponse
+                });
+
+                status.textContent = "Response complete";
+
+            } catch (error) {
+                // Remove failed messages from conversation history
+                messages.pop();
+
+                aiMessage.textContent = "Error: " + error.message;
+                status.textContent = "Request failed";
+            } finally {
+                button.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
